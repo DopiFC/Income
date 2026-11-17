@@ -1,0 +1,6 @@
+{
+  "name": "Dopi GRIncome – Tính Lương & Quản Trị Nhân Sự Việt Nam",
+  "description": "Dopi GRIncome: Công cụ tính lương Gross – Net, Thuế TNCN 2026, Bảo hiểm xã hội và chi phí nhân sự chuẩn pháp luật Việt Nam. Hỗ trợ tự lưu mã hóa AES-256 trên thiết bị.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
