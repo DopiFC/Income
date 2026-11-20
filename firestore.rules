@@ -1,0 +1,364 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isVerifiedUser() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'nhgb2605@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidKeyId(keyId) {
+      return keyId is string && keyId.size() >= 4 && keyId.size() <= 64 && keyId.matches('^[A-Z0-9_\\-]+$');
+    }
+
+    function hasActiveLicenseDoc(uid) {
+      let userPath = /databases/$(database)/documents/users/$(uid);
+      return exists(userPath)
+        && get(userPath).data.licenseKey is string
+        && get(userPath).data.licenseKey.size() >= 4
+        && get(userPath).data.licenseRevoked == false;
+    }
+
+    function isApiVerificationEnabled() {
+      let cfgPath = /databases/$(database)/documents/appConfig/licenseSettings;
+      return exists(cfgPath)
+        && get(cfgPath).data.verificationMode in ['api_and_firestore', 'api_only']
+        && get(cfgPath).data.apiEndpointUrl is string
+        && get(cfgPath).data.apiEndpointUrl.size() >= 8;
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserProfile(data, uid) {
+      return data.keys().hasAll([
+          'uid', 'email', 'displayName', 'role',
+          'licenseKey', 'licensePlan', 'licenseSource',
+          'licenseActivatedAt', 'licenseExpiresAt', 'licenseRevoked',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'role',
+          'licenseKey', 'licensePlan', 'licenseSource',
+          'licenseActivatedAt', 'licenseExpiresAt', 'licenseRevoked',
+          'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid == uid && isValidId(data.uid)
+        && data.email is string && data.email.size() <= 254
+        && data.displayName is string && data.displayName.size() <= 120
+        && data.role is string && data.role in ['user', 'admin']
+        && data.licenseKey is string && data.licenseKey.size() <= 64
+        && data.licensePlan is string && data.licensePlan.size() <= 64
+        && data.licenseSource is string && data.licenseSource in ['none', 'edutech_api', 'firestore_store']
+        && data.licenseActivatedAt is string && data.licenseActivatedAt.size() <= 40
+        && data.licenseExpiresAt is string && data.licenseExpiresAt.size() <= 40
+        && data.licenseRevoked is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayrollWorkspace(data, uid) {
+      return data.keys().hasAll([
+          'ownerUid', 'version', 'selectedMonth', 'companyProfile',
+          'employees', 'attendanceMap', 'adjustmentsMap',
+          'departments', 'ranks', 'customLegalConfig',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid', 'version', 'selectedMonth', 'companyProfile',
+          'employees', 'attendanceMap', 'adjustmentsMap',
+          'departments', 'ranks', 'customLegalConfig',
+          'createdAt', 'updatedAt'
+        ])
+        && data.ownerUid is string && data.ownerUid == uid && isValidId(data.ownerUid)
+        && data.version is string && data.version.size() >= 1 && data.version.size() <= 20
+        && data.selectedMonth is string && data.selectedMonth.size() <= 16 && data.selectedMonth.matches('^[0-9]{4}-[0-9]{2}$')
+        && data.companyProfile is map
+        && data.employees is list && data.employees.size() <= 1000 && (data.employees.size() == 0 || data.employees[0] is map)
+        && data.attendanceMap is map
+        && data.adjustmentsMap is map
+        && data.departments is list && data.departments.size() <= 100 && (data.departments.size() == 0 || data.departments[0] is string)
+        && data.ranks is list && data.ranks.size() <= 100 && (data.ranks.size() == 0 || data.ranks[0] is string)
+        && (data.customLegalConfig == null || data.customLegalConfig is map)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLicenseKey(data, keyId) {
+      return data.keys().hasAll([
+          'key', 'plan', 'durationDays', 'status',
+          'assignedUid', 'assignedEmail', 'activatedAt', 'expiresAt',
+          'source', 'note', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'key', 'plan', 'durationDays', 'status',
+          'assignedUid', 'assignedEmail', 'activatedAt', 'expiresAt',
+          'source', 'note', 'createdAt', 'updatedAt'
+        ])
+        && data.key is string && data.key == keyId && isValidKeyId(data.key)
+        && data.plan is string && data.plan.size() >= 1 && data.plan.size() <= 64
+        && data.durationDays is number && data.durationDays >= 0 && data.durationDays <= 36500
+        && data.status is string && data.status in ['available', 'active', 'revoked']
+        && data.assignedUid is string && data.assignedUid.size() <= 128
+        && data.assignedEmail is string && data.assignedEmail.size() <= 254
+        && data.activatedAt is string && data.activatedAt.size() <= 40
+        && data.expiresAt is string && data.expiresAt.size() <= 40
+        && data.source is string && data.source in ['edutech_api', 'firestore_store']
+        && data.note is string && data.note.size() <= 200
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLicenseSettings(data) {
+      return data.keys().hasAll([
+          'verificationMode', 'apiEndpointUrl', 'apiMethod', 'purchaseUrl', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'verificationMode', 'apiEndpointUrl', 'apiMethod', 'purchaseUrl', 'updatedAt'
+        ])
+        && data.verificationMode is string && data.verificationMode in ['firestore_only', 'api_and_firestore', 'api_only']
+        && data.apiEndpointUrl is string && data.apiEndpointUrl.size() <= 500
+        && data.apiMethod is string && data.apiMethod in ['POST', 'GET']
+        && data.purchaseUrl is string && data.purchaseUrl.size() >= 8 && data.purchaseUrl.size() <= 500
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRecord(data, uid) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'email', 'createdAt'])
+        && data.uid is string && data.uid == uid && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.createdAt is timestamp;
+    }
+
+    function matchesAtomicClaimedLicense(data, uid) {
+      let keyPath = /databases/$(database)/documents/licenseKeys/$(data.licenseKey);
+      return isValidKeyId(data.licenseKey)
+        && data.licenseRevoked == false
+        && existsAfter(keyPath)
+        && getAfter(keyPath).data.assignedUid == uid
+        && getAfter(keyPath).data.status == 'active'
+        && data.licensePlan == getAfter(keyPath).data.plan
+        && data.licenseSource == getAfter(keyPath).data.source
+        && data.licenseExpiresAt == getAfter(keyPath).data.expiresAt;
+    }
+
+    // --- Collection: /users/{uid} ---
+    match /users/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isAdmin();
+
+      allow create: if isVerifiedUser()
+        && isValidId(uid)
+        && isValidUserProfile(incoming(), uid)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() || (
+            isOwner(uid)
+            && incoming().role == 'user'
+            && incoming().licenseKey == ''
+            && incoming().licensePlan == ''
+            && incoming().licenseSource == 'none'
+            && incoming().licenseActivatedAt == ''
+            && incoming().licenseExpiresAt == ''
+            && incoming().licenseRevoked == false
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(uid)
+        && isValidUserProfile(incoming(), uid)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Admin override
+          isAdmin() ||
+          // Action 2: Owner updates basic profile fields
+          (
+            isOwner(uid)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'updatedAt'])
+          ) ||
+          // Action 3: Owner atomically binds a claimed license key
+          (
+            isOwner(uid)
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'licenseKey', 'licensePlan', 'licenseSource',
+              'licenseActivatedAt', 'licenseExpiresAt', 'licenseRevoked', 'updatedAt'
+            ])
+            && matchesAtomicClaimedLicense(incoming(), uid)
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(uid);
+
+      // --- Subcollection: /users/{uid}/workspaces/{workspaceId} ---
+      match /workspaces/{workspaceId} {
+        allow get: if isVerifiedUser()
+          && isValidId(uid)
+          && isValidId(workspaceId)
+          && (isAdmin() || (isOwner(uid) && hasActiveLicenseDoc(uid)));
+
+        allow list: if isVerifiedUser()
+          && (isAdmin() || resource.data.ownerUid == request.auth.uid);
+
+        allow create: if isVerifiedUser()
+          && isValidId(uid)
+          && isValidId(workspaceId)
+          && isValidPayrollWorkspace(incoming(), uid)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (isAdmin() || (isOwner(uid) && hasActiveLicenseDoc(uid)));
+
+        allow update: if isVerifiedUser()
+          && isValidId(uid)
+          && isValidId(workspaceId)
+          && isValidPayrollWorkspace(incoming(), uid)
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'version', 'selectedMonth', 'companyProfile',
+            'employees', 'attendanceMap', 'adjustmentsMap',
+            'departments', 'ranks', 'customLegalConfig', 'updatedAt'
+          ])
+          && (isAdmin() || (isOwner(uid) && hasActiveLicenseDoc(uid)));
+
+        allow delete: if isVerifiedUser()
+          && isValidId(uid)
+          && isValidId(workspaceId)
+          && (isAdmin() || (isOwner(uid) && hasActiveLicenseDoc(uid)));
+      }
+    }
+
+    // --- Collection: /licenseKeys/{keyId} ---
+    match /licenseKeys/{keyId} {
+      allow get: if isVerifiedUser()
+        && isValidKeyId(keyId)
+        && (
+          isAdmin() ||
+          resource == null ||
+          resource.data.status == 'available' ||
+          resource.data.assignedUid == request.auth.uid
+        );
+
+      allow list: if isAdmin();
+
+      allow create: if isVerifiedUser()
+        && isValidKeyId(keyId)
+        && isValidLicenseKey(incoming(), keyId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Admin generates a new license key
+          isAdmin() ||
+          // Action 2: Verified user locks an EduTech-Hub API-verified key 1:1 to their account
+          (
+            incoming().source == 'edutech_api'
+            && incoming().status == 'active'
+            && incoming().assignedUid == request.auth.uid
+            && isApiVerificationEnabled()
+            && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.licenseKey == keyId
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidKeyId(keyId)
+        && isValidLicenseKey(incoming(), keyId)
+        && incoming().key == existing().key
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Admin updates or revokes key
+          isAdmin() ||
+          // Action 2: Verified user claims an available key once (terminal state locking)
+          (
+            existing().status == 'available'
+            && existing().assignedUid == ''
+            && incoming().status == 'active'
+            && incoming().assignedUid == request.auth.uid
+            && (
+              (existing().durationDays == 0 && incoming().expiresAt == '') ||
+              (existing().durationDays > 0 && incoming().expiresAt.size() >= 10)
+            )
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'assignedUid', 'assignedEmail',
+              'activatedAt', 'expiresAt', 'updatedAt'
+            ])
+            && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.licenseKey == keyId
+          )
+        );
+
+      allow delete: if isAdmin() && isValidKeyId(keyId);
+    }
+
+    // --- Collection: /appConfig/{configId} ---
+    match /appConfig/{configId} {
+      allow get: if isVerifiedUser() && isValidId(configId) && (isAdmin() || configId == 'licenseSettings');
+      allow list: if isAdmin();
+
+      allow create: if isAdmin()
+        && isValidId(configId)
+        && isValidLicenseSettings(incoming())
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(configId)
+        && isValidLicenseSettings(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'verificationMode', 'apiEndpointUrl', 'apiMethod', 'purchaseUrl', 'updatedAt'
+        ]);
+
+      allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    // --- Collection: /admins/{uid} ---
+    match /admins/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        && isValidId(uid)
+        && isValidAdminRecord(incoming(), uid)
+        && incoming().createdAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(uid)
+        && isValidAdminRecord(incoming(), uid)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email']);
+      allow delete: if isAdmin() && isValidId(uid);
+    }
+  }
+}

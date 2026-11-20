@@ -1,0 +1,329 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user account metadata and license binding status.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID matching the document ID."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "User email address."
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "User display name."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "admin"],
+          "description": "Account access role."
+        },
+        "licenseKey": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Normalized active license key or empty string when unlicensed."
+        },
+        "licensePlan": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Activated plan label (e.g., 30 ngày, 1 năm, Vĩnh viễn)."
+        },
+        "licenseSource": {
+          "type": "string",
+          "enum": ["none", "edutech_api", "firestore_store"],
+          "description": "Verification source for the bound license key."
+        },
+        "licenseActivatedAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "ISO timestamp when the license was activated or empty string."
+        },
+        "licenseExpiresAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "ISO expiration timestamp or empty string for lifetime/unlicensed."
+        },
+        "licenseRevoked": {
+          "type": "boolean",
+          "description": "Whether the license has been revoked by an administrator."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of account profile creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "displayName",
+        "role",
+        "licenseKey",
+        "licensePlan",
+        "licenseSource",
+        "licenseActivatedAt",
+        "licenseExpiresAt",
+        "licenseRevoked",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PayrollWorkspace": {
+      "title": "PayrollWorkspace",
+      "description": "Per-user cloud payroll workspace synced across devices.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase Auth UID."
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 20,
+          "description": "Workspace schema version."
+        },
+        "selectedMonth": {
+          "type": "string",
+          "maxLength": 16,
+          "pattern": "^[0-9]{4}-[0-9]{2}$",
+          "description": "Active payroll month YYYY-MM."
+        },
+        "companyProfile": {
+          "type": "object",
+          "description": "Company profile details."
+        },
+        "employees": {
+          "type": "array",
+          "description": "Employee roster array (max 1000)."
+        },
+        "attendanceMap": {
+          "type": "object",
+          "description": "Map of employeeId to MonthlyAttendance."
+        },
+        "adjustmentsMap": {
+          "type": "object",
+          "description": "Map of employeeId to Adjustments."
+        },
+        "departments": {
+          "type": "array",
+          "description": "Department names list (max 100)."
+        },
+        "ranks": {
+          "type": "array",
+          "description": "Rank names list (max 100)."
+        },
+        "customLegalConfig": {
+          "type": "object",
+          "description": "Optional custom legal configuration override or null."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when workspace was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when workspace was updated."
+        }
+      },
+      "required": [
+        "ownerUid",
+        "version",
+        "selectedMonth",
+        "companyProfile",
+        "employees",
+        "attendanceMap",
+        "adjustmentsMap",
+        "departments",
+        "ranks",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LicenseKey": {
+      "title": "LicenseKey",
+      "description": "1-to-1 bound license key record preventing duplicate account activation.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 64,
+          "pattern": "^[A-Z0-9_\\-]+$",
+          "description": "Normalized uppercase license key matching document ID."
+        },
+        "plan": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Plan display name."
+        },
+        "durationDays": {
+          "type": "number",
+          "description": "Validity duration in days (0 = lifetime)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["available", "active", "revoked"],
+          "description": "Current key lifecycle status."
+        },
+        "assignedUid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "UID of the single account bound to this key or empty string."
+        },
+        "assignedEmail": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "Email of the bound account or empty string."
+        },
+        "activatedAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "ISO timestamp when activated or empty string."
+        },
+        "expiresAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "ISO expiration timestamp or empty string for lifetime."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["edutech_api", "firestore_store"],
+          "description": "Origin of the license key."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Optional admin note."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": [
+        "key",
+        "plan",
+        "durationDays",
+        "status",
+        "assignedUid",
+        "assignedEmail",
+        "activatedAt",
+        "expiresAt",
+        "source",
+        "note",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LicenseSettings": {
+      "title": "LicenseSettings",
+      "description": "Admin-managed EduTech-Hub license verification API settings.",
+      "type": "object",
+      "properties": {
+        "verificationMode": {
+          "type": "string",
+          "enum": ["firestore_only", "api_and_firestore", "api_only"],
+          "description": "Active license verification strategy."
+        },
+        "apiEndpointUrl": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "EduTech-Hub HTTP API URL for validating license keys."
+        },
+        "apiMethod": {
+          "type": "string",
+          "enum": ["POST", "GET"],
+          "description": "HTTP method used when calling EduTech-Hub verification API."
+        },
+        "purchaseUrl": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Storefront URL where users purchase keys."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last configuration change."
+        }
+      },
+      "required": [
+        "verificationMode",
+        "apiEndpointUrl",
+        "apiMethod",
+        "purchaseUrl",
+        "updatedAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Optional additional admin accounts granted license management privileges.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Admin user UID."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "Admin email."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of admin grant."
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user account profile and license status."
+    },
+    "/users/{uid}/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/PayrollWorkspace" },
+      "description": "Private payroll workspace data synced to Firestore."
+    },
+    "/licenseKeys/{keyId}": {
+      "schema": { "$ref": "#/entities/LicenseKey" },
+      "description": "1-to-1 license key ledger enforcing single-account activation."
+    },
+    "/appConfig/{configId}": {
+      "schema": { "$ref": "#/entities/LicenseSettings" },
+      "description": "Application license API settings (document ID: licenseSettings)."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted admin lookup collection."
+    }
+  }
+}

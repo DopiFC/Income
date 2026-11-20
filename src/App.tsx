@@ -21,6 +21,14 @@ import { PayslipView } from './components/payslip/PayslipView';
 import { SettingsView } from './components/settings/SettingsView';
 import { CompanyProfileModal } from './components/organization/CompanyProfileModal';
 import { StorageModal } from './components/storage/StorageModal';
+import { AuthGateScreen } from './components/auth/AuthGateScreen';
+import { LicenseGateScreen } from './components/auth/LicenseGateScreen';
+import { AdminLicenseView } from './components/admin/AdminLicenseView';
+import {
+  LocalLegacyCandidate,
+  LocalMigrationBanner
+} from './components/storage/LocalMigrationBanner';
+import { useFirebase } from './contexts/FirebaseContext';
 
 import { Employee, SalaryType, WorkingStatus } from './types/employee';
 import { MonthlyAttendance, Adjustments } from './types/attendance';
@@ -38,8 +46,39 @@ import { SAMPLE_EMPLOYEES, getSampleAttendance, getSampleAdjustments } from './u
 import { exportPayrollWorkbook } from './services/excelExport';
 import { encryptWorkspace, decryptWorkspace } from './services/crypto';
 import { hasStoredProfile, getStoredProfile, saveEncryptedProfile, saveStandardWorkspace, deleteStoredProfile } from './services/db';
+import { loadCloudWorkspace, saveCloudWorkspace } from './services/firestoreWorkspace';
 
 export default function App() {
+  const { user, isAuthReady, isProfileLoading, licenseEval } = useFirebase();
+
+  if (!isAuthReady || (user && user.emailVerified && isProfileLoading)) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+        <div className="w-10 h-10 rounded-lg bg-blue-700 text-white font-extrabold text-sm flex items-center justify-center mb-3">
+          DG
+        </div>
+        <div className="text-sm font-semibold text-slate-800">
+          Đang kiểm tra tài khoản & bản quyền...
+        </div>
+        <div className="text-xs text-slate-500 mt-1">Dopi GRIncome</div>
+      </div>
+    );
+  }
+
+  if (!user || !user.emailVerified) {
+    return <AuthGateScreen />;
+  }
+
+  if (!licenseEval.isActive) {
+    return <LicenseGateScreen />;
+  }
+
+  return <AuthenticatedWorkspace key={user.uid} />;
+}
+
+function AuthenticatedWorkspace() {
+  const { user, profile, licenseEval, licenseSettings, signOutUser } = useFirebase();
+
   // Navigation & Month
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -78,13 +117,18 @@ export default function App() {
     return getLegalConfigForMonth(selectedMonth, customLegalConfig || undefined);
   }, [selectedMonth, customLegalConfig]);
 
-  // Encrypted Storage state (AES-256-GCM + IndexedDB)
+  // Encrypted Local Storage state (optional backup/migration) + Firebase Cloud Sync state
   const [storageStatus, setStorageStatus] = useState<StorageStatus>('saved');
   const [masterPassword, setMasterPassword] = useState<string>('');
   const [hasStoredProfileState, setHasStoredProfileState] = useState<boolean>(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [currentVaultRecord, setCurrentVaultRecord] = useState<EncryptedVaultRecord | null>(null);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
+
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'loading' | 'saving' | 'saved' | 'error'>('loading');
+  const [legacyCandidate, setLegacyCandidate] = useState<LocalLegacyCandidate | null>(null);
+  const cloudHydratedRef = useRef<boolean>(false);
+  const cloudDocExistsRef = useRef<boolean>(false);
 
   // Modals
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
@@ -98,58 +142,116 @@ export default function App() {
     return new Set(employees.map((e) => e.code.toLowerCase()));
   }, [employees]);
 
-  // 1. Check IndexedDB on mount - Restore either encrypted vault or standard workspace
-  useEffect(() => {
-    async function checkVault() {
-      try {
-        const record: any = await getStoredProfile();
-        if (record) {
-          if (record.ciphertextHex && record.isEncrypted !== false) {
-            // Profile is protected by master password
-            setHasStoredProfileState(true);
-            setStorageStatus('locked');
-            setCurrentVaultRecord(record);
-            setLastSavedAt(record.updatedAt);
-            setIsStorageModalOpen(true);
-          } else if (record.plainWorkspace) {
-            // Profile was saved directly in unencrypted local workspace
-            const state = record.plainWorkspace as AppWorkspaceState;
-            if (state.companyProfile) setCompanyProfile(state.companyProfile);
-            if (state.employees) setEmployees(state.employees);
-            if (state.attendanceMap) setAttendanceMap(state.attendanceMap);
-            if (state.adjustmentsMap) setAdjustmentsMap(state.adjustmentsMap);
-            if (state.departments) setDepartments(state.departments);
-            if (state.ranks) setRanks(state.ranks);
-            if (state.customLegalConfig !== undefined) setCustomLegalConfig(state.customLegalConfig);
-            if (state.selectedMonth) setSelectedMonth(state.selectedMonth);
-
-            setHasStoredProfileState(false);
-            setStorageStatus('saved');
-            setLastSavedAt(record.updatedAt || new Date().toISOString());
-          }
-        }
-      } catch (err) {
-        console.error('Lỗi khi kiểm tra IndexedDB:', err);
-      }
-    }
-    checkVault();
+  const applyWorkspaceState = useCallback((state: AppWorkspaceState) => {
+    if (state.companyProfile) setCompanyProfile(state.companyProfile);
+    if (state.employees) setEmployees(state.employees);
+    if (state.attendanceMap) setAttendanceMap(state.attendanceMap);
+    if (state.adjustmentsMap) setAdjustmentsMap(state.adjustmentsMap);
+    if (state.departments && state.departments.length > 0) setDepartments(state.departments);
+    if (state.ranks && state.ranks.length > 0) setRanks(state.ranks);
+    if (state.customLegalConfig !== undefined) setCustomLegalConfig(state.customLegalConfig);
+    if (state.selectedMonth) setSelectedMonth(state.selectedMonth);
   }, []);
 
-  // 2. Auto-save with debouncing when changes happen
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // 1. Load user's workspace from Cloud Firestore, and detect optional legacy IndexedDB data for migration
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    async function hydrateFromCloudAndCheckLocal() {
+      setCloudSyncStatus('loading');
+      try {
+        const cloudState = await loadCloudWorkspace(user!.uid);
+        if (cancelled) return;
+
+        if (cloudState) {
+          cloudDocExistsRef.current = true;
+          applyWorkspaceState(cloudState);
+          setLastSavedAt(cloudState.savedAt);
+        } else {
+          cloudDocExistsRef.current = false;
+        }
+
+        cloudHydratedRef.current = true;
+        setCloudSyncStatus('saved');
+
+        // Inspect legacy local IndexedDB for optional 1-click migration if cloud has no employees yet
+        try {
+          const localRecord: any = await getStoredProfile();
+          if (cancelled || !localRecord) return;
+
+          const cloudHasEmployees = Boolean(cloudState && cloudState.employees.length > 0);
+          if (localRecord.ciphertextHex && localRecord.isEncrypted !== false) {
+            setHasStoredProfileState(true);
+            setCurrentVaultRecord(localRecord);
+            if (!cloudHasEmployees) {
+              setLegacyCandidate({
+                type: 'encrypted',
+                savedAt: localRecord.updatedAt,
+                encryptedRecord: localRecord as EncryptedVaultRecord
+              });
+            }
+          } else if (
+            localRecord.plainWorkspace &&
+            Array.isArray(localRecord.plainWorkspace.employees) &&
+            localRecord.plainWorkspace.employees.length > 0 &&
+            !cloudHasEmployees
+          ) {
+            setLegacyCandidate({
+              type: 'plain',
+              employeeCount: localRecord.plainWorkspace.employees.length,
+              savedAt: localRecord.updatedAt,
+              plainWorkspace: localRecord.plainWorkspace as AppWorkspaceState
+            });
+          }
+        } catch (localErr) {
+          console.error('Lỗi khi kiểm tra dữ liệu cục bộ cũ:', localErr);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Lỗi khi tải dữ liệu từ Firebase:', err);
+          cloudHydratedRef.current = true;
+          setCloudSyncStatus('error');
+        }
+      }
+    }
+
+    void hydrateFromCloudAndCheckLocal();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, applyWorkspaceState]);
+
+  const handleImportLegacyWorkspace = useCallback(
+    async (state: AppWorkspaceState) => {
+      applyWorkspaceState(state);
+      if (user) {
+        setCloudSyncStatus('saving');
+        await saveCloudWorkspace(user.uid, state, cloudDocExistsRef.current);
+        cloudDocExistsRef.current = true;
+        setLastSavedAt(new Date().toISOString());
+        setCloudSyncStatus('saved');
+      }
+    },
+    [applyWorkspaceState, user]
+  );
+
+  // 2. Auto-save with debouncing to Cloud Firestore (and local encrypted cache if enabled)
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    // If vault is locked awaiting password, do NOT overwrite it
-    if (storageStatus === 'locked') return;
+    if (!user || !cloudHydratedRef.current) return;
 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
+    setCloudSyncStatus('saving');
     setStorageStatus('saving');
 
     saveTimeoutRef.current = setTimeout(async () => {
       try {
         const workspace: AppWorkspaceState = {
-          version: '1.0',
+          version: '2.0',
           savedAt: new Date().toISOString(),
           selectedMonth,
           companyProfile,
@@ -161,35 +263,34 @@ export default function App() {
           customLegalConfig
         };
 
-        if (masterPassword && (storageStatus === 'unlocked' || storageStatus === 'saved' || storageStatus === 'saving')) {
-          // Encrypted mode
+        await saveCloudWorkspace(user.uid, workspace, cloudDocExistsRef.current);
+        cloudDocExistsRef.current = true;
+        setLastSavedAt(workspace.savedAt);
+        setCloudSyncStatus('saved');
+
+        if (masterPassword) {
           const encryptedRecord = await encryptWorkspace(
             workspace,
             masterPassword,
             companyProfile.companyName
           );
-
           await saveEncryptedProfile(encryptedRecord);
           setCurrentVaultRecord(encryptedRecord);
-          setLastSavedAt(encryptedRecord.updatedAt);
           setHasStoredProfileState(true);
-          setStorageStatus('saved');
-        } else {
-          // Standard persistent local workspace (IndexedDB)
-          await saveStandardWorkspace(workspace);
-          setLastSavedAt(workspace.savedAt);
-          setStorageStatus('saved');
         }
+        setStorageStatus('saved');
       } catch (err) {
-        console.error('Lỗi tự động lưu vào IndexedDB:', err);
+        console.error('Lỗi tự động lưu lên Firebase:', err);
+        setCloudSyncStatus('error');
         setStorageStatus('error');
       }
-    }, 1000);
+    }, 800);
 
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
   }, [
+    user,
     employees,
     attendanceMap,
     adjustmentsMap,
@@ -593,10 +694,21 @@ export default function App() {
     }
   }, []);
 
+  const licenseLabel = useMemo(() => {
+    if (licenseEval.isAdmin) return 'Quản trị viên hệ thống';
+    if (licenseEval.daysRemaining === null) return `${licenseEval.plan || 'Bản quyền'} · Vĩnh viễn`;
+    return `${licenseEval.plan || 'Bản quyền'} · Còn ${licenseEval.daysRemaining} ngày`;
+  }, [licenseEval]);
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800">
-      {/* Top Privacy & Storage Status Banner */}
-      <PrivacyBanner />
+      {/* Top Cloud Sync & License Expiry Banner */}
+      <PrivacyBanner
+        userEmail={profile?.email || user?.email || undefined}
+        licensePlan={licenseEval.plan}
+        daysRemaining={licenseEval.daysRemaining}
+        purchaseUrl={licenseSettings.purchaseUrl}
+      />
 
       {/* Main Navbar */}
       <Navbar
@@ -612,6 +724,10 @@ export default function App() {
         storageStatus={storageStatus}
         hasStoredProfile={hasStoredProfileState}
         onOpenStorageModal={() => setIsStorageModalOpen(true)}
+        userEmail={profile?.email || user?.email || undefined}
+        isAdmin={licenseEval.isAdmin}
+        cloudSyncStatus={cloudSyncStatus}
+        onSignOut={() => void signOutUser()}
       />
 
       {/* Mobile / Hamburger Navigation Drawer */}
@@ -625,10 +741,23 @@ export default function App() {
         onOpenResetModal={() => setIsResetModalOpen(true)}
         storageStatus={storageStatus}
         onOpenStorageModal={() => setIsStorageModalOpen(true)}
+        userEmail={profile?.email || user?.email || undefined}
+        userDisplayName={profile?.displayName || user?.displayName || undefined}
+        licenseLabel={licenseLabel}
+        isAdmin={licenseEval.isAdmin}
+        onSignOut={() => void signOutUser()}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+        {legacyCandidate && (
+          <LocalMigrationBanner
+            candidate={legacyCandidate}
+            onImportWorkspace={handleImportLegacyWorkspace}
+            onDismiss={() => setLegacyCandidate(null)}
+          />
+        )}
+
         {activeTab === 'dashboard' && (
           <DashboardView
             employees={employees}
@@ -782,6 +911,8 @@ export default function App() {
         )}
 
         {activeTab === 'guide' && <UserGuideView />}
+
+        {activeTab === 'admin-license' && licenseEval.isAdmin && <AdminLicenseView />}
       </main>
 
 
@@ -859,7 +990,7 @@ export default function App() {
               Dopi GRIncome – Hệ thống tính lương & Quản trị nhân sự chuẩn Việt Nam
             </div>
             <div className="text-[11px] text-slate-500">
-              Mã hóa cục bộ AES-256-GCM trên thiết bị, xuất báo cáo Excel 5 sheet, chạy 100% trên trình duyệt.
+              Đồng bộ đám mây Firebase theo tài khoản, hỗ trợ bản quyền EduTech-Hub, xuất báo cáo Excel 5 sheet & phiếu lương PNG.
             </div>
           </div>
           <div className="flex items-center gap-4 text-[11px]">
